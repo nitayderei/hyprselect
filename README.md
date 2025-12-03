@@ -2,7 +2,7 @@
 
 HyprSelect adds a desktop selection box to Hyprland, that does absolutely nothing, but is absolutely essential.
 
-![Video of hypr select](https://i.imgur.com/asSYZ2y.gif)
+![Image of desktop selection on empty desktop](https://github.com/user-attachments/assets/309bacff-a539-466f-83fa-b92b71dd8567)
 
 ## Installation
 
