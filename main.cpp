@@ -1,5 +1,6 @@
 #include <hyprland/src/helpers/Color.hpp>
 #include <hyprland/src/protocols/types/SurfaceRole.hpp>
+#include <hyprlang.hpp>
 #include <hyprutils/math/Box.hpp>
 #include <hyprutils/math/Vector2D.hpp>
 #include <linux/input-event-codes.h>
@@ -24,7 +25,50 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() {
 
 void drawRect(CBox box, CHyprColor color, float round, float roundingPower, bool blur, float blurA);
 void drawBorder(CBox box, CHyprColor color, float size, float round, float roundingPower, bool blur, float blurA);
-void drawDropShadow(PHLMONITOR pMonitor, float const& a, CHyprColor b, float ROUNDINGBASE, float ROUNDINGPOWER, CBox fullBox, int range, float scale, bool sharp); 
+void drawDropShadow(PHLMONITOR pMonitor, float const& a, CHyprColor b, float ROUNDINGBASE, float ROUNDINGPOWER, CBox fullBox, int range, bool sharp); 
+
+static void *PHANDLE = nullptr;
+
+class HyprlangUnspecifiedCustomType {};
+
+// abandon hope all ye who enter here
+template <typename T, typename V = HyprlangUnspecifiedCustomType>
+class ConfigValue {
+public:
+	ConfigValue(const std::string& option) {
+		this->static_data_ptr = HyprlandAPI::getConfigValue(PHANDLE, option)->getDataStaticPtr();
+	}
+
+	template <typename U = T>
+	typename std::enable_if<std::is_same<U, Hyprlang::CUSTOMTYPE>::value, const V&>::type
+	operator*() const {
+		return *(V*) ((Hyprlang::CUSTOMTYPE*) *this->static_data_ptr)->getData();
+	}
+
+	template <typename U = T>
+	typename std::enable_if<std::is_same<U, Hyprlang::CUSTOMTYPE>::value, const V*>::type
+	operator->() const {
+		return &**this;
+	}
+
+	// Bullshit microptimization case for strings
+	template <typename U = T>
+	typename std::enable_if<std::is_same<U, Hyprlang::STRING>::value, const char*>::type
+	operator*() const {
+		return *(const char**) this->static_data_ptr;
+	}
+
+	template <typename U = T>
+	typename std::enable_if<
+	    !std::is_same<U, Hyprlang::CUSTOMTYPE>::value && !std::is_same<U, Hyprlang::STRING>::value,
+	    const T&>::type
+	operator*() const {
+		return *(T*) *this->static_data_ptr;
+	}
+
+private:
+	void* const* static_data_ptr;
+};
 
 // Always make box start from top left point
 CBox rect(Vector2D start, Vector2D current) {
@@ -59,7 +103,16 @@ CBox fixForRender(PHLMONITOR m, CBox box) {
 }
 
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
-    static void *PHANDLE = handle;
+    PHANDLE = handle;
+
+    HyprlandAPI::addConfigValue(PHANDLE, "plugin:hyprselect:should_round", Hyprlang::CConfigValue((Hyprlang::INT) 0));
+    HyprlandAPI::addConfigValue(PHANDLE, "plugin:hyprselect:col.main", Hyprlang::CConfigValue((Hyprlang::INT) CHyprColor(0, .52, .9, 0.25).getAsHex()));
+    HyprlandAPI::addConfigValue(PHANDLE, "plugin:hyprselect:col.border", Hyprlang::CConfigValue((Hyprlang::INT) CHyprColor(0, .52, .9, 1.0).getAsHex()));
+    HyprlandAPI::addConfigValue(PHANDLE, "plugin:hyprselect:should_blur", Hyprlang::CConfigValue((Hyprlang::INT) 0.0));
+    HyprlandAPI::addConfigValue(PHANDLE, "plugin:hyprselect:border_size", Hyprlang::CConfigValue((Hyprlang::FLOAT) -1.0));
+    HyprlandAPI::addConfigValue(PHANDLE, "plugin:hyprselect:rounding", Hyprlang::CConfigValue((Hyprlang::FLOAT) 6.0));
+    HyprlandAPI::addConfigValue(PHANDLE, "plugin:hyprselect:rounding_power", Hyprlang::CConfigValue((Hyprlang::FLOAT) 2.0));
+    HyprlandAPI::addConfigValue(PHANDLE, "plugin:hyprselect:fade_time_ms", Hyprlang::CConfigValue((Hyprlang::FLOAT) 200.0));
 
     static bool drawSelection = false;
     static Vector2D mouseAtStart;
@@ -102,6 +155,13 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         auto stage = std::any_cast<eRenderStage>(data);
         if (stage == eRenderStage::RENDER_POST_WALLPAPER) {
             if (drawSelection) {
+            	static const auto c_should_round = ConfigValue<Hyprlang::INT>("plugin:hyprselect:should_round");
+            	static const auto c_col_main = ConfigValue<Hyprlang::INT>("plugin:hyprselect:col.main");
+            	static const auto c_col_border = ConfigValue<Hyprlang::INT>("plugin:hyprselect:col.border");
+            	static const auto c_rounding = ConfigValue<Hyprlang::FLOAT>("plugin:hyprselect:rounding");
+            	static const auto c_rounding_power = ConfigValue<Hyprlang::FLOAT>("plugin:hyprselect:rounding_power");
+            	static const auto c_border_size = ConfigValue<Hyprlang::FLOAT>("plugin:hyprselect:border_size");
+
                 auto mouse = g_pInputManager->getMouseCoordsInternal();
                 auto selectionBox = rect(mouseAtStart, mouse);
 
@@ -109,8 +169,12 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
                 auto m = g_pHyprOpenGL->m_renderData.pMonitor.lock();
                 selectionBox = fixForRender(m, selectionBox);
                 
-                float rounding = 6.0f * m->m_scale;
-                float roundingPower = 2.0f;
+                float rounding = *c_rounding * m->m_scale;
+                float roundingPower = *c_rounding_power;
+                if (!*c_should_round) {
+                    rounding = 0.0;
+                    roundingPower = 2.0f;
+                }
 
                 float supressDropShadow = 1.0f;
                 float thresholdForShowingDropShadow = 40.0f * m->m_scale;
@@ -122,20 +186,26 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
                     if (val < supressDropShadow)
                         supressDropShadow = val;
                 }
-                drawDropShadow(m, 1.0, {0, 0, 0, 0.15f * supressDropShadow}, rounding, roundingPower, selectionBox, 7 * m->m_scale, 1.0, false);
+                auto bbb = selectionBox;
+                bbb.expand(1.0); 
+                drawDropShadow(m, 1.0, {0, 0, 0, 0.12f * supressDropShadow}, rounding, roundingPower, bbb, 7 * m->m_scale, false);
                 
-                drawRect(selectionBox, {0, .47, .84, 0.25}, rounding, roundingPower, false, 1.0f);
-                //drawRect(selectionBox, **PMAINCOL, rounding, roundingPower, false, 1.0f);
+                drawRect(selectionBox, *c_col_main, rounding, roundingPower, false, 1.0f);
 
                 auto borderBox = selectionBox;
                 auto borderSize = std::floor(1.1f * m->m_scale);
                 if (borderSize < 1.0)
                     borderSize = 1.0;
                 // If we don't apply m_scale to rounding here, it'll not match drawRect, even though drawRect shouldn't be applying m_scale, somewhere in the pipeline, it clearly does (annoying inconsistancy)
-                borderBox.expand(-borderSize * .7);
+                if (*c_border_size >= 0.0)  { 
+                    borderSize = *c_border_size;
+                    borderBox = selectionBox;
+                }
+                borderBox.expand(-borderSize);
                 borderBox.round();
-                drawBorder(borderBox, {0, .47, .84, 1.0}, borderSize, rounding * m->m_scale, 2.0f, false, 1.0f);
-                //drawBorder(borderBox, **PBORDERCOL, borderSize, rounding * m->m_scale, 2.0f, false, 1.0f);
+                if (*c_border_size != 0.0) {
+                    drawBorder(borderBox, *c_col_border, borderSize, rounding, roundingPower, false, 1.0f);
+                }
             }
         }
     });
@@ -239,8 +309,8 @@ void drawShadowInternal(const CBox& box, int round, float roundingPower, int ran
         g_pHyprOpenGL->renderRoundedShadow(box, round, roundingPower, range, color, 1.F);
 }
 
-void drawDropShadow(PHLMONITOR pMonitor, float const& a, CHyprColor b, float ROUNDINGBASE, float ROUNDINGPOWER, CBox fullBox, int range, float scale, bool sharp) {
-    AnyPass::AnyData anydata([pMonitor, a, b, ROUNDINGBASE, ROUNDINGPOWER, fullBox, range, scale, sharp](AnyPass* pass) {
+void drawDropShadow(PHLMONITOR pMonitor, float const& a, CHyprColor b, float ROUNDINGBASE, float ROUNDINGPOWER, CBox fullBox, int range, bool sharp) {
+    AnyPass::AnyData anydata([pMonitor, a, b, ROUNDINGBASE, ROUNDINGPOWER, fullBox, range, sharp](AnyPass* pass) {
         CHyprColor m_realShadowColor = CHyprColor(b.r, b.g, b.b, b.a);
         if (g_pCompositor->m_windows.empty())
             return;
@@ -248,7 +318,7 @@ void drawDropShadow(PHLMONITOR pMonitor, float const& a, CHyprColor b, float ROU
         static auto PSHADOWSIZE = range;
         const auto ROUNDING = ROUNDINGBASE;
         auto allBox = fullBox;
-        allBox.expand(PSHADOWSIZE * pMonitor->m_scale);
+        allBox.expand(PSHADOWSIZE);
         allBox.round();
         
         if (fullBox.width < 1 || fullBox.height < 1)
@@ -266,7 +336,7 @@ void drawDropShadow(PHLMONITOR pMonitor, float const& a, CHyprColor b, float ROU
         CRegion saveDamage = g_pHyprOpenGL->m_renderData.damage;
 
         g_pHyprOpenGL->m_renderData.damage = allBox;
-        g_pHyprOpenGL->m_renderData.damage.subtract(fullBox.copy().expand(-ROUNDING * pMonitor->m_scale)).intersect(saveDamage);
+        g_pHyprOpenGL->m_renderData.damage.subtract(fullBox.copy().expand(-ROUNDING)).intersect(saveDamage);
         g_pHyprOpenGL->m_renderData.renderModif.applyToRegion(g_pHyprOpenGL->m_renderData.damage);
 
         alphaFB.bind();
@@ -277,10 +347,10 @@ void drawDropShadow(PHLMONITOR pMonitor, float const& a, CHyprColor b, float ROU
         g_pHyprOpenGL->renderRect(allBox, CHyprColor(0, 0, 0, 1), {.round = 0});
 
         // render white shadow with the alpha of the shadow color (otherwise we clear with alpha later and shit it to 2 bit)
-        drawShadowInternal(allBox, ROUNDING * pMonitor->m_scale, ROUNDINGPOWER, PSHADOWSIZE * pMonitor->m_scale, CHyprColor(1, 1, 1, m_realShadowColor.a), a, sharp);
+        drawShadowInternal(allBox, ROUNDING, ROUNDINGPOWER, PSHADOWSIZE, CHyprColor(1, 1, 1, m_realShadowColor.a), a, sharp);
 
         // render black window box ("clip")
-        int some = (ROUNDING + 1 /* This fixes small pixel gaps. */) * pMonitor->m_scale;
+        int some = (ROUNDING + 1 /* This fixes small pixel gaps. */);
         g_pHyprOpenGL->renderRect(fullBox, CHyprColor(0, 0, 0, 1.0), {.round = some, .roundingPower = ROUNDINGPOWER});
 
         alphaSwapFB.bind();
