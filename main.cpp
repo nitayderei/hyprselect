@@ -143,7 +143,7 @@ void drawSelectionBox(CBox selectionBox, float alpha) {
 
     CHyprColor mainCol = *c_col_main;
     mainCol.a *= alpha;
-    drawRect(selectionBox, mainCol, rounding, roundingPower, *c_should_blur, *c_blur_power);
+    drawRect(selectionBox, mainCol, rounding, roundingPower, *c_should_blur, sqrt(*c_blur_power * alpha));
 
     auto borderBox = selectionBox;
     auto borderSize = std::floor(1.1f * m->m_scale);
